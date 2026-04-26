@@ -1,0 +1,14 @@
+{
+  "name": "Terapie Giornaliere",
+  "short_name": "Terapie",
+  "description": "Gestione terapie e medicine giornaliere",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F3EE",
+  "theme_color": "#F7F3EE",
+  "orientation": "any",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
