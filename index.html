@@ -308,6 +308,27 @@
   </div>
 </div>
 
+<!-- MODAL POSTICIPA -->
+<div class="modal-overlay" id="modal-posticipa">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3>⏰ Posticipa promemoria</h3>
+    <input type="hidden" id="post-ter-id">
+    <input type="hidden" id="post-orario-id">
+    <input type="hidden" id="post-nome">
+    <p class="section-sub" id="post-desc" style="margin-bottom:16px"></p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <button class="btn btn-ghost" onclick="posticipa(30)">30 minuti</button>
+      <button class="btn btn-ghost" onclick="posticipa(60)">1 ora</button>
+      <button class="btn btn-ghost" onclick="posticipa(120)">2 ore</button>
+      <button class="btn btn-ghost" onclick="posticipa(180)">3 ore</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" style="flex:1" onclick="closeModal('modal-posticipa')">Annulla</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const SUPABASE_URL = 'https://ovwauqqwwsoyilsshzta.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_8IOAUOAijkP0E3yIol1GrQ_jk-UpFAk';
@@ -361,6 +382,48 @@ function formatoIcon(f) {
   return m[f] || '💊';
 }
 
+// ── POSTICIPI (solo per oggi, salvati sul dispositivo) ─────
+function posticipiKey() { return 'posticipi_' + todayStr(); }
+function getPosticipi() {
+  try { return JSON.parse(localStorage.getItem(posticipiKey()) || '{}'); } catch(e) { return {}; }
+}
+function setPosticipo(key, ts) {
+  const p = getPosticipi(); p[key] = ts;
+  localStorage.setItem(posticipiKey(), JSON.stringify(p));
+}
+function clearPosticipo(key) {
+  const p = getPosticipi(); delete p[key];
+  localStorage.setItem(posticipiKey(), JSON.stringify(p));
+}
+
+function openModalPosticipa(terId, orarioId, nome) {
+  document.getElementById('post-ter-id').value = terId;
+  document.getElementById('post-orario-id').value = orarioId;
+  document.getElementById('post-nome').value = nome;
+  document.getElementById('post-desc').textContent = `${nome} · tra quanto vuoi essere ricontattato?`;
+  document.getElementById('modal-posticipa').classList.add('open');
+}
+
+function posticipa(minuti) {
+  const terId = document.getElementById('post-ter-id').value;
+  const orarioId = document.getElementById('post-orario-id').value || 'null';
+  const nome = document.getElementById('post-nome').value;
+  const key = `${terId}_${orarioId}`;
+  const target = new Date(Date.now() + minuti * 60000);
+  setPosticipo(key, target.getTime());
+  closeModal('modal-posticipa');
+  showToast(`⏰ ${nome} posticipata alle ${target.toTimeString().slice(0,5)}`);
+  if ('Notification' in window && Notification.permission === 'granted') {
+    setTimeout(() => {
+      new Notification(`💊 ${nome}`, {
+        body: 'Promemoria posticipato: è ora di prenderla!',
+        icon: '/icon-192.png'
+      });
+    }, minuti * 60000);
+  }
+  loadOggi();
+}
+
 // ── NOTIFICHE ─────────────────────────────────
 async function richiediNotifiche() {
   const p = await Notification.requestPermission();
@@ -391,6 +454,22 @@ async function programmaNotifiche() {
         }, diff);
       }
     });
+  });
+
+  // ripianifica anche i promemoria posticipati (es. dopo un reload della pagina)
+  const posticipi = getPosticipi();
+  Object.entries(posticipi).forEach(([key, ts]) => {
+    const diff = ts - Date.now();
+    if (diff <= 0 || diff >= 86400000) return;
+    const terId = key.split('_')[0];
+    const t = terapie.find(x => x.id === terId);
+    if (!t) return;
+    setTimeout(() => {
+      new Notification(`💊 ${t.nome}`, {
+        body: 'Promemoria posticipato: è ora di prenderla!',
+        icon: '/icon-192.png'
+      });
+    }, diff);
   });
 }
 
@@ -478,6 +557,7 @@ async function loadOggi() {
 
   const assunte = new Set((assunzioniOggi||[]).map(a => `${a.terapia_id}_${a.orario_id}`));
   const nowMin = minutiDaOra(nowTime());
+  const posticipi = getPosticipi();
 
   // raccoglie tutti gli slot orari
   let slots = [];
@@ -485,13 +565,21 @@ async function loadOggi() {
     (t.terapie_orari || []).forEach(o => {
       const key = `${t.id}_${o.id}`;
       const done = assunte.has(key);
-      const oraMin = minutiDaOra(o.ora.slice(0,5));
-      slots.push({ t, o, done, oraMin, past: !done && oraMin < nowMin - 30 });
+      let oraMin = minutiDaOra(o.ora.slice(0,5));
+      let oraDisplay = o.ora.slice(0,5);
+      let posticipata = false;
+      if (!done && posticipi[key]) {
+        const d = new Date(posticipi[key]);
+        oraMin = d.getHours()*60 + d.getMinutes();
+        oraDisplay = d.toTimeString().slice(0,5);
+        posticipata = true;
+      }
+      slots.push({ t, o, done, oraMin, oraDisplay, posticipata, past: !done && oraMin < nowMin - 30 });
     });
     // terapia senza orari
     if (!t.terapie_orari?.length) {
       const key = `${t.id}_null`;
-      slots.push({ t, o: null, done: assunte.has(key), oraMin: 0, past: false });
+      slots.push({ t, o: null, done: assunte.has(key), oraMin: 0, oraDisplay: null, posticipata: false, past: false });
     }
   });
 
@@ -511,7 +599,7 @@ async function loadOggi() {
   // raggruppa per ora
   const gruppi = {};
   slots.forEach(s => {
-    const key = s.o ? s.o.ora.slice(0,5) : 'al bisogno';
+    const key = s.o ? s.oraDisplay : 'al bisogno';
     if (!gruppi[key]) gruppi[key] = [];
     gruppi[key].push(s);
   });
@@ -522,21 +610,25 @@ async function loadOggi() {
         <div class="oggi-slot-time">${ora}</div>
         <div class="oggi-slot-label">${ora !== 'al bisogno' ? oraLabel(ora) : '📋 Al bisogno'}</div>
       </div>
-      ${items.map(({t, o, done, past}) => {
+      ${items.map(({t, o, done, past, posticipata}) => {
         const sc = parseInt(t.scorte);
         const scHtml = sc <= t.scorte_minime
           ? `<span class="oggi-scorte" style="background:#fdecea;color:var(--danger)">⚠️ ${sc}</span>`
           : `<span class="oggi-scorte" style="background:#e8f5e0;color:var(--accent2)">${sc}</span>`;
+        const nomeSafe = t.nome.replace(/'/g,"\\'");
         return `<div class="oggi-item ${done?'done':''} ${past?'past':''}">
           <div class="oggi-dot ${done?'done':''} ${past?'past':''}"></div>
           <div class="oggi-info">
             <div class="oggi-nome">${formatoIcon(t.formato)} ${t.nome} ${o?'· '+o.quantita+' '+t.formato:''}</div>
-            <div class="oggi-sub">${t.principio_attivo||''} ${t.dosaggio?t.dosaggio+' '+t.unita_dosaggio:''} ${t.motivo?'· '+t.motivo:''}</div>
+            <div class="oggi-sub">${t.principio_attivo||''} ${t.dosaggio?t.dosaggio+' '+t.unita_dosaggio:''} ${t.motivo?'· '+t.motivo:''} ${posticipata?'· ⏰ posticipata':''}</div>
           </div>
           ${scHtml}
           ${done
             ? '<span class="badge badge-green" style="margin-left:8px">✅</span>'
-            : `<button class="btn btn-success btn-sm" style="margin-left:8px" onclick="openModalAssunzione('${t.id}','${o?.id||''}','${t.nome.replace(/'/g,"\\'")}')">✅ Presa</button>`
+            : `<div style="display:flex;gap:6px;margin-left:8px;flex-wrap:wrap;justify-content:flex-end">
+                <button class="btn btn-success btn-sm" onclick="openModalAssunzione('${t.id}','${o?.id||''}','${nomeSafe}')">✅ Presa</button>
+                ${o ? `<button class="btn btn-ghost btn-sm" onclick="openModalPosticipa('${t.id}','${o.id}','${nomeSafe}')">⏰</button>` : ''}
+               </div>`
           }
         </div>`;
       }).join('')}
@@ -575,6 +667,7 @@ async function salvaAssunzione() {
   // scala scorte
   const { data: ter } = await sb.from('terapie').select('scorte').eq('id', terId).single();
   if (ter && ter.scorte > 0) await sb.from('terapie').update({ scorte: ter.scorte - 1 }).eq('id', terId);
+  clearPosticipo(`${terId}_${orarioId || 'null'}`);
   closeModal('modal-ass');
   showToast('✅ Assunzione registrata!');
   loadOggi();
